@@ -27,7 +27,7 @@
       register: ec2_key_result
 
     - name: Save private key
-      copy: content="{{ ec2_key_result.key.private_key }}" dest="/root/.ssh/amazon_rsa.pem" mode=0600
+      copy: content="{{ ec2_key_result.key.private_key }}" dest="/home/ubuntu/.ssh/amazon_rsa.pem" mode=0600
       when: ec2_key_result.changed
 
     - name: Create build security group
@@ -150,11 +150,11 @@
   remote_user: ubuntu
   gather_facts: true
   vars:
-    ansible_ssh_private_key_file: /ubuntu/.ssh/amazon_rsa.pem
+    ansible_ssh_private_key_file: /home/ubuntu/.ssh/amazon_rsa.pem
 
   tasks:
   - name: include secret
-    include_vars: /home/ubuntu/lesson13/cred.yml
+    include_vars: /home/ubuntu/cred.yml
 
   - name: Esure git and maven package is present
     become: true
