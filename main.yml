@@ -1,0 +1,229 @@
+---
+- name: Create AWS instance
+  hosts: localhost
+  connection: local
+  gather_facts: False
+  remote_user: ubuntu
+  vars:
+    region: us-east-1
+    instance_type: t2.micro
+    ami: ami-04505e74c0741db8d # Ubuntu 20.04 LTS
+    keypair: kp1
+    subnetid:  subnet-0ee089a33dba6fbc7
+    group_build: build
+    group_prod: prod
+
+  tasks:
+
+    - name: include secret
+      include_vars: /home/ubuntu/cred.yml
+    - debug: msg="{{ lookup('env','access_key') }} is an environment variable"
+    - name: create a new ec2 key pair, returns generated private key
+      amazon.aws.ec2_key:
+       name: "{{ keypair }}"
+       region: "{{ region }}"
+       aws_access_key: "{{ access_key }}"
+       aws_secret_key: "{{ secret_key }}"
+      register: ec2_key_result
+
+    - name: Save private key
+      copy: content="{{ ec2_key_result.key.private_key }}" dest="/root/.ssh/amazon_rsa.pem" mode=0600
+      when: ec2_key_result.changed
+
+    - name: Create build security group
+      amazon.aws.ec2_group:
+        name: "{{ group_build }}"
+        description: "build instance"
+        region: "{{ region }}"
+        aws_access_key: "{{ access_key }}"
+        aws_secret_key: "{{ secret_key }}"
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+            cidr_ip: 0.0.0.0/0
+            rule_desc: allow http
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+
+    - name: Create prod security group
+      ec2_group:
+        name: "{{ group_prod }}"
+        description: "prod instance"
+        region: "{{ region }}"
+        aws_access_key: "{{ access_key }}"
+        aws_secret_key: "{{ secret_key }}"
+        rules:
+          - proto: tcp
+            ports:
+              - 22
+            cidr_ip: 0.0.0.0/0
+            rule_desc: allow http
+          - proto: tcp
+            ports:
+              - 8080
+            cidr_ip: 0.0.0.0/0
+            rule_desc: allow ssh
+        rules_egress:
+          - proto: all
+            cidr_ip: 0.0.0.0/0
+
+
+    - name: Create builder instance
+      ec2_instance:
+        aws_access_key: "{{ access_key }}"
+        aws_secret_key: "{{ secret_key }}"
+        key_name: "{{ keypair }}"
+        region: "{{ region }}"
+        security_group: "{{ group_build }}"
+        instance_type: "{{ instance_type }}"
+        image_id: "{{ ami }}"
+        wait: yes
+        name: build
+        state: running
+        network:
+          assign_public_ip: true
+        vpc_subnet_id: "{{ subnetid }}"
+      register: builder
+
+    - name: Create production instance
+      ec2_instance:
+        aws_access_key: "{{ access_key }}"
+        aws_secret_key: "{{ secret_key }}"
+        key_name: "{{ keypair }}"
+        region: "{{ region }}"
+        security_group: "{{ group_prod }}"
+        instance_type: "{{ instance_type }}"
+        image_id: "{{ ami }}"
+        wait: yes
+        name: prod
+        state: running
+        network:
+          assign_public_ip: true
+        vpc_subnet_id: "{{ subnetid }}"
+      register: production
+
+    - name: print
+      debug:
+        var: builder.instances[0].public_ip_address
+
+    - name: print
+      debug:
+        var: production.instances[0].public_ip_address
+
+    - name: Add instance to bulder group
+      add_host:
+        name: "{{ builder.instances[0].public_ip_address }}"
+        groups: builder
+
+    - name: Add instance to production group
+      add_host:
+        name: "{{ production.instances[0].public_ip_address }}"
+        groups: production
+
+    - name: Wait for SSH to come up
+      wait_for: host={{ item.public_dns_name }} port=22 delay=5 timeout=320 state=started
+      loop: "{{ builder.instances }}"
+
+    - name: Wait for SSH to come up
+      wait_for: host={{ item.public_dns_name }} port=22 delay=5 timeout=320 state=started
+      loop: "{{ production.instances }}"
+
+    - name: Add nodes to known hosts
+      shell: ssh-keyscan -H {{ item.public_ip_address }} >> ~/.ssh/known_hosts
+      loop: "{{ builder.instances }}"
+
+    - name: Add nodes to known hosts
+      shell: ssh-keyscan -H {{ item.public_ip_address }} >> ~/.ssh/known_hosts
+      loop: "{{ production.instances }}"
+
+    - name: Ensure S3 bucket presented
+      s3_bucket:
+        aws_access_key: "{{ access_key }}"
+        aws_secret_key: "{{ secret_key }}"
+        name: boxfuse.snuffles999.com
+        state: present
+
+- name: Configuration of build node
+  hosts: builder
+  remote_user: ubuntu
+  gather_facts: true
+  vars:
+    ansible_ssh_private_key_file: /ubuntu/.ssh/amazon_rsa.pem
+
+  tasks:
+  - name: include secret
+    include_vars: /home/ubuntu/lesson13/cred.yml
+
+  - name: Esure git and maven package is present
+    become: true
+    apt:
+      update_cache: yes
+      name:
+      - git
+      - maven
+      - python3-pip
+      state: present
+
+  - name: pip depenc
+    pip:
+      name:
+      - botocore
+      - boto3
+
+  - name: Clone repository
+    git:
+      repo: https://github.com/boxfuse/boxfuse-sample-java-war-hello.git
+      dest: /tmp/boxfuse-sample-java-war-hello
+
+  - name: Build war
+    shell: mvn -f /tmp/boxfuse-sample-java-war-hello package
+
+  - name: Ensure that artifact copied to S3 bucket
+    amazon.aws.aws_s3:
+      aws_access_key: "{{ access_key }}"
+      aws_secret_key: "{{ secret_key }}"
+      bucket: boxfuse.snuffles999.com
+      object: hello-1.0.war
+      src: /tmp/boxfuse-sample-java-war-hello/target/hello-1.0.war
+      mode: put
+
+- name: Configure production server
+  hosts: production
+  user: ubuntu
+  become: yes
+  vars:
+    ansible_ssh_private_key_file: /root/.ssh/amazon_rsa.pem
+
+  tasks:
+  - name: include secret
+    include_vars: /home/ubuntu/lesson13/cred.yml
+  - name: Ensure tomcat package is present
+    apt:
+      update_cache: yes
+      name:
+      - tomcat9
+      - python3-pip
+      state: present
+
+  - name: pip depenc
+    pip:
+      name:
+      - botocore
+      - boto3
+
+
+  - name:  Implement of transfer artifact to prodaction server
+    amazon.aws.aws_s3:
+      aws_access_key: "{{ access_key }}"
+      aws_secret_key: "{{ secret_key }}"
+      bucket: boxfuse.snuffles999.com
+      object: hello-1.0.war
+      dest: /var/lib/tomcat9/webapps/hello-1.0.war
+      mode: get
+
+  - name: Ensure tomcat service is started
+    service:
+     name: tomcat9
+     state: started
