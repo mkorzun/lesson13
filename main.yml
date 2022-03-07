@@ -17,7 +17,6 @@
 
     - name: include secret
       include_vars: /home/ubuntu/cred.yml
-    - debug: msg="{{ lookup('env','access_key') }} is an environment variable"
     - name: create a new ec2 key pair, returns generated private key
       amazon.aws.ec2_key:
        name: "{{ keypair }}"
