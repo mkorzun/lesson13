@@ -68,7 +68,6 @@
           - proto: all
             cidr_ip: 0.0.0.0/0
 
-
     - name: Create builder instance
       ec2_instance:
         aws_access_key: "{{ access_key }}"
@@ -120,14 +119,6 @@
       add_host:
         name: "{{ production.instances[0].public_ip_address }}"
         groups: production
-
-    - name: Wait for SSH to come up
-      wait_for: host={{ item.public_dns_name }} port=22 delay=5 timeout=320 state=started
-      loop: "{{ builder.instances }}"
-
-    - name: Wait for SSH to come up
-      wait_for: host={{ item.public_dns_name }} port=22 delay=5 timeout=320 state=started
-      loop: "{{ production.instances }}"
 
     - name: Add nodes to known hosts
       shell: ssh-keyscan -H {{ item.public_ip_address }} >> ~/.ssh/known_hosts
